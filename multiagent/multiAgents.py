@@ -73,8 +73,76 @@ class ReflexAgent(Agent):
         newFood = successorGameState.getFood()
         newGhostStates = successorGameState.getGhostStates()
         newScaredTimes = [ghostState.scaredTimer for ghostState in newGhostStates]
+        # Initialize score from successor's game score (baseline)
+        score = float(successorGameState.getScore())
+        foodList = newFood.asList()
+        numFood = len(foodList)
+        # Capsules (power pellets)
+        capsules = successorGameState.getCapsules()
+        numCapsules = len(capsules)
 
-        "*** YOUR CODE HERE ***"
+        # Ghost info and scared timers
+        ghostStates = successorGameState.getGhostStates()
+        ghostPositions = [gs.getPosition() for gs in ghostStates] if ghostStates else []
+
+        # Penalidade proporcional ao número de comidas restantes (incentiva comer)
+        score += -4.0 * numFood
+
+        # Bónus pela comida mais próxima: mais alto quanto mais perto estiver
+        if foodList:
+            # calcula distâncias Manhattan até todas as comidas e pega a mínima
+            dists = [manhattanDistance(newPos, food) for food in foodList]
+            closestFoodDist = min(dists)
+            # bónus inversamente proporcional (evita divisão por zero)
+            score += 10.0 / (closestFoodDist + 1)
+        else:
+            # se não há comida, adiciona um grande bónus (estado ótimo)
+            score += 500.0
+
+        # Cápsulas: bónus por estar em cima de uma cápsula e penalidade por tê-las remanescentes
+        if newPos in capsules:
+            score += 50.0
+        score += -2.0 * len(capsules)
+
+        # Avalia proximidade de fantasmas:
+        # - fantasmas não assustados: penaliza fortemente proximidade
+        # - fantasmas assustados: incentiva perseguição se seguro
+        for idx, gs in enumerate(ghostStates):
+            gpos = gs.getPosition()
+            dist = manhattanDistance(newPos, gpos)
+            scared = gs.scaredTimer > 0
+
+            if scared:
+                # pequeno incentivo para perseguir fantasmas assustados (decrescente com a distância)
+                if dist > 0:
+                    score += 8.0 / dist
+            else:
+                # fantasma perigoso: penalidades escalonadas para reduzir mortes
+                if dist == 0:
+                    # no mesmo quadrado -> morte imediata (muito ruim)
+                    score -= 1000.0
+                elif dist <= 1:
+                    # muito perto -> evite fortemente
+                    score -= 200.0
+                elif dist <= 3:
+                    # perto -> penalidade considerável, menor a medida que aumenta a distância
+                    score -= 40.0 / dist
+                else:
+                    # longe -> nenhuma penalidade extra
+                    score -= 0.0
+
+        # Penaliza permanecer parado (ação STOP) para evitar inércia
+        if action == Directions.STOP:
+            score -= 5.0
+
+        # Incentivo adicional para aproximar-se de comida quando não há perigo imediato
+        # Verifica a menor distância a um fantasma para julgar segurança
+        ghostDistances = [manhattanDistance(newPos, gpos) for gpos in ghostPositions] if ghostPositions else [float('inf')]
+        minGhostDist = min(ghostDistances)
+        if minGhostDist > 2 and foodList:
+            # dá um impulso maior à proximidade da comida quando é seguro fazê-lo
+            score += 5.0 / (closestFoodDist + 1) if foodList else 0.0
+
         return successorGameState.getScore()
 
 def scoreEvaluationFunction(currentGameState: GameState):
@@ -135,7 +203,30 @@ class MinimaxAgent(MultiAgentSearchAgent):
         gameState.isLose():
         Returns whether or not the game state is a losing state
         """
-        "*** YOUR CODE HERE ***"
+        def minimax(agent, depth, state):
+            if state.isWin() or state.isLose() or (depth == self.depth and agent == 0):
+                return self.evaluationFunction(state)
+            numAgents = state.getNumAgents()
+            nextAgent = (agent + 1) % numAgents
+            nextDepth = depth + 1 if nextAgent == 0 else depth
+
+            actions = state.getLegalActions(agent)
+            if not actions:
+                return self.evaluationFunction(state)
+
+            if agent == 0:  # Pacman (max)
+                return max(minimax(nextAgent, nextDepth, state.generateSuccessor(agent, action)) for action in actions)
+            else:           # Fantasmas (min)
+                return min(minimax(nextAgent, nextDepth, state.generateSuccessor(agent, action)) for action in actions)
+
+        bestScore = float('-inf')
+        bestAction = Directions.STOP
+        for action in gameState.getLegalActions(0):
+            value = minimax(1, 0, gameState.generateSuccessor(0, action))
+            if value > bestScore:
+                bestScore = value
+                bestAction = action
+        return bestAction
         util.raiseNotDefined()
 
 class AlphaBetaAgent(MultiAgentSearchAgent):
@@ -147,7 +238,43 @@ class AlphaBetaAgent(MultiAgentSearchAgent):
         """
         Returns the minimax action using self.depth and self.evaluationFunction
         """
-        "*** YOUR CODE HERE ***"
+        def alphabeta(agent, depth, state, alpha, beta):
+            if state.isWin() or state.isLose() or (depth == self.depth and agent == 0):
+                return self.evaluationFunction(state)
+            numAgents = state.getNumAgents()
+            nextAgent = (agent + 1) % numAgents
+            nextDepth = depth + 1 if nextAgent == 0 else depth
+
+            actions = state.getLegalActions(agent)
+            if not actions:
+                return self.evaluationFunction(state)
+
+            if agent == 0:  # Pacman (max)
+                v = float('-inf')
+                for action in actions:
+                    v = max(v, alphabeta(nextAgent, nextDepth, state.generateSuccessor(agent, action), alpha, beta))
+                    if v > beta: return v         # Poda beta
+                    alpha = max(alpha, v)
+                return v
+            else:           # Fantasmas (min)
+                v = float('inf')
+                for action in actions:
+                    v = min(v, alphabeta(nextAgent, nextDepth, state.generateSuccessor(agent, action), alpha, beta))
+                    if v < alpha: return v        # Poda alpha
+                    beta = min(beta, v)
+                return v
+
+        bestScore = float('-inf')
+        bestAction = Directions.STOP
+        alpha = float('-inf')
+        beta = float('inf')
+        for action in gameState.getLegalActions(0):
+            value = alphabeta(1, 0, gameState.generateSuccessor(0, action), alpha, beta)
+            if value > bestScore:
+                bestScore = value
+                bestAction = action
+            alpha = max(alpha, bestScore)
+        return bestAction
         util.raiseNotDefined()
 
 class ExpectimaxAgent(MultiAgentSearchAgent):
@@ -162,7 +289,34 @@ class ExpectimaxAgent(MultiAgentSearchAgent):
         All ghosts should be modeled as choosing uniformly at random from their
         legal moves.
         """
-        "*** YOUR CODE HERE ***"
+        def expectimax(agent, depth, state):
+            if state.isWin() or state.isLose() or (depth == self.depth and agent == 0):
+                return self.evaluationFunction(state)
+            numAgents = state.getNumAgents()
+            nextAgent = (agent + 1) % numAgents
+            nextDepth = depth + 1 if nextAgent == 0 else depth
+
+            actions = state.getLegalActions(agent)
+            if not actions:
+                return self.evaluationFunction(state)
+
+            if agent == 0:  # Pacman (max)
+                return max(expectimax(nextAgent, nextDepth, state.generateSuccessor(agent, action)) for action in actions)
+            else:           # Fantasmas (expectation)
+                total = 0
+                for action in actions:
+                    prob = 1.0 / len(actions)
+                    total += prob * expectimax(nextAgent, nextDepth, state.generateSuccessor(agent, action))
+                return total
+
+        bestScore = float('-inf')
+        bestAction = Directions.STOP
+        for action in gameState.getLegalActions(0):
+            value = expectimax(1, 0, gameState.generateSuccessor(0, action))
+            if value > bestScore:
+                bestScore = value
+                bestAction = action
+        return bestAction
         util.raiseNotDefined()
 
 def betterEvaluationFunction(currentGameState: GameState):
